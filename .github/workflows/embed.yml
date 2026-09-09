@@ -88,7 +88,8 @@ jobs:
           VER=${{ needs.resolve.outputs.tor_tag }}
           URL="https://dist.torproject.org/tor-${VER#tor-}.tar.gz"
           curl -fsSLo tor.tar.gz "$URL"
-          echo "TAR_SHA=$(sha256sum tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          SHA_CMD="sha256sum"; command -v sha256sum >/dev/null || SHA_CMD="shasum -a 256"
+          echo "TAR_SHA=$($SHA_CMD tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
           tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
       - name: Build tor
         run: |
@@ -116,7 +117,8 @@ jobs:
           VER=${{ needs.resolve.outputs.tor_tag }}
           URL="https://dist.torproject.org/tor-${VER#tor-}.tar.gz"
           curl -fsSLo tor.tar.gz "$URL"
-          echo "TAR_SHA=$(sha256sum tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          SHA_CMD="sha256sum"; command -v sha256sum >/dev/null || SHA_CMD="shasum -a 256"
+          echo "TAR_SHA=$($SHA_CMD tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
           tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
       - name: Build tor
         run: |
@@ -124,7 +126,9 @@ jobs:
           if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi
           # macOS has no static libc: statically link the three deps,
           # libSystem stays dynamic (present on every macOS install).
-          ./configure --disable-gcc-hardening \
+          # Xcode CLT provides clang via the cc shim only after license accept;
+          # point configure at clang explicitly.
+          CC=clang ./configure --disable-gcc-hardening \
             --with-openssl-dir="$(brew --prefix openssl@3)" \
             --with-libevent-dir="$(brew --prefix)" \
             CPPFLAGS="-I$(brew --prefix)/include -I$(brew --prefix openssl@3)/include" \

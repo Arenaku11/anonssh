@@ -237,12 +237,15 @@ jobs:
         run: |
           mkdir -p internal/embed/bin
           mkdir -p internal/embed/geoip
-          cp artifacts/tor-linux-amd64/tor        internal/embed/bin/tor-linux-amd64
-          cp artifacts/tor-windows-amd64/tor.exe  internal/embed/bin/tor-windows-amd64.exe
-          cp artifacts/tor-darwin-arm64/tor       internal/embed/bin/tor-darwin-arm64
-          cp artifacts/geoip/geoip  internal/embed/geoip/geoip
-          cp artifacts/geoip/geoip6 internal/embed/geoip/geoip6
-          for f in artifacts/pt-*/*; do
+          # upload-artifact keeps the given directory structure, so the tor
+          # binaries live under their original path inside each artifact.
+          cp "$(find artifacts/tor-linux-amd64  -type f -name tor)"      internal/embed/bin/tor-linux-amd64
+          cp "$(find artifacts/tor-windows-amd64 -type f -name tor.exe)" internal/embed/bin/tor-windows-amd64.exe
+          cp "$(find artifacts/tor-darwin-arm64 -type f -name tor)"      internal/embed/bin/tor-darwin-arm64
+          cp "$(find artifacts/geoip -type f -name geoip)"  internal/embed/geoip/geoip
+          cp "$(find artifacts/geoip -type f -name geoip6)" internal/embed/geoip/geoip6
+          # pt artifacts preserve the clone layout (obfs4/obfs4proxy/...).
+          for f in $(find artifacts/pt-* -type f -name 'obfs4proxy*' -o -type f -name 'snowflake-client*'); do
             base=$(basename "$f")
             osarch="${f#artifacts/pt-}"; osarch="${osarch%/*}"
             case "$base" in

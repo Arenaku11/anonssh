@@ -247,7 +247,9 @@ jobs:
           # pt artifacts preserve the clone layout (obfs4/obfs4proxy/...).
           for f in $(find artifacts/pt-* -type f -name 'obfs4proxy*' -o -type f -name 'snowflake-client*'); do
             base=$(basename "$f")
-            osarch="${f#artifacts/pt-}"; osarch="${osarch%/*}"
+            # osarch = first path component under artifacts/pt-<os>-<arch>.
+            rel="${f#artifacts/pt-}"; osarch="${rel%%/*}"
+            case "$osarch" in *-*) ;; *) continue ;; esac
             case "$base" in
               obfs4proxy*)      cp "$f" "internal/embed/bin/obfs4proxy-$osarch${base#obfs4proxy}" ;;
               snowflake-client*) cp "$f" "internal/embed/bin/snowflake-client-$osarch${base#snowflake-client}" ;;

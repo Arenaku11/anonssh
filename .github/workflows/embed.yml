@@ -44,12 +44,15 @@ jobs:
           VER=${{ needs.resolve.outputs.tor_tag }}
           URL="https://dist.torproject.org/tor-${VER#tor-}.tar.gz"
           curl -fsSLo tor.tar.gz "$URL"
-          echo "TAR_SHA=$(sha256sum tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # macOS lacks coreutils' sha256sum; shasum is always present.
+          SHA_CMD="sha256sum"; command -v sha256sum >/dev/null || SHA_CMD="shasum -a 256"
+          echo "TAR_SHA=$($SHA_CMD tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
           tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
       - name: Build static tor
         run: |
           cd tor-src
-          ./autogen.sh
+          # tor >= 0.4.8 tarballs dropped autogen.sh; bootstrap either way.
+          if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi
           # Static openssl/libevent/zlib; glibc stays dynamic (NSS limits).
           ./configure --disable-gcc-hardening \
             --with-zlib-dir=/usr --with-libevent-dir=/usr --with-openssl-dir=/usr \
@@ -90,7 +93,7 @@ jobs:
       - name: Build tor
         run: |
           cd tor-src
-          ./autogen.sh
+          if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi
           # Fully static: mingw64 ships .a for all three deps.
           ./configure --disable-gcc-hardening \
             --with-zlib-dir=/mingw64 --with-libevent-dir=/mingw64 --with-openssl-dir=/mingw64
@@ -118,7 +121,7 @@ jobs:
       - name: Build tor
         run: |
           cd tor-src
-          ./autogen.sh
+          if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi
           # macOS has no static libc: statically link the three deps,
           # libSystem stays dynamic (present on every macOS install).
           ./configure --disable-gcc-hardening \

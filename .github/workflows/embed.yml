@@ -93,6 +93,7 @@ jobs:
           tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
       - name: Build tor
         run: |
+          DEPS="$PWD/tor-deps"
           cd tor-src
           if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi
           # Fully static: mingw64 ships .a for all three deps.
@@ -150,14 +151,16 @@ jobs:
           # Xcode CLT provides clang via the cc shim only after license accept;
           # point configure at clang explicitly.
           export CC=clang
-          ./configure --disable-gcc-hardening \
-            --with-openssl-dir="$PWD/tor-deps" \
-            --with-libevent-dir="$PWD/tor-deps" \
-            --with-zlib-dir="$PWD/tor-deps" \
-            CPPFLAGS="-I$PWD/tor-deps/include" \
-            LIBS="$PWD/tor-deps/lib/libssl.a $PWD/tor-deps/lib/libcrypto.a $PWD/tor-deps/lib/libevent_core.a $PWD/tor-deps/lib/libevent_extra.a $PWD/tor-deps/lib/libz.a -lm -liconv"
-          echo "== config.log compiler check =="
-          grep -A12 "C compiler works" config.log | head -30 || true
+          if ! ./configure --disable-gcc-hardening \
+            --with-openssl-dir="$DEPS" \
+            --with-libevent-dir="$DEPS" \
+            --with-zlib-dir="$DEPS" \
+            CPPFLAGS="-I$DEPS/include" \
+            LIBS="$DEPS/lib/libssl.a $DEPS/lib/libcrypto.a $DEPS/lib/libevent_core.a $DEPS/lib/libevent_extra.a $DEPS/lib/libz.a -lm -liconv"; then
+            echo "== config.log (compiler check) =="
+            sed -n '/C compiler works/,/config:exit/p' config.log | tail -40 || tail -60 config.log
+            exit 1
+          fi
           make -j"$(sysctl -n hw.ncpu)"
           strip src/app/tor
           otool -L src/app/tor

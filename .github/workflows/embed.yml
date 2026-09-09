@@ -38,7 +38,10 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
-      - run: sudo apt-get update && sudo apt-get install -y libevent-dev libssl-dev zlib1g-dev autoconf automake libtool pkg-config
+      # Third-party apt sources on the runner image (e.g. Google Chrome)
+      # intermittently publish hash mismatches; we only need the main repos.
+      - run: sudo apt-get update || true
+      - run: sudo apt-get install -y libevent-dev libssl-dev zlib1g-dev autoconf automake libtool pkg-config
       - name: Fetch tor source (hash-pinned)
         run: |
           VER=${{ needs.resolve.outputs.tor_tag }}

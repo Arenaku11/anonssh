@@ -149,12 +149,15 @@ jobs:
           # libSystem stays dynamic (present on every macOS install).
           # Xcode CLT provides clang via the cc shim only after license accept;
           # point configure at clang explicitly.
-          CC=clang ./configure --disable-gcc-hardening \
+          export CC=clang
+          ./configure --disable-gcc-hardening \
             --with-openssl-dir="$PWD/tor-deps" \
             --with-libevent-dir="$PWD/tor-deps" \
             --with-zlib-dir="$PWD/tor-deps" \
             CPPFLAGS="-I$PWD/tor-deps/include" \
             LIBS="$PWD/tor-deps/lib/libssl.a $PWD/tor-deps/lib/libcrypto.a $PWD/tor-deps/lib/libevent_core.a $PWD/tor-deps/lib/libevent_extra.a $PWD/tor-deps/lib/libz.a -lm -liconv"
+          echo "== config.log compiler check =="
+          grep -A12 "C compiler works" config.log | head -30 || true
           make -j"$(sysctl -n hw.ncpu)"
           strip src/app/tor
           otool -L src/app/tor

@@ -119,14 +119,20 @@ jobs:
           # dynamically links brew dylibs would not run on user Macs. Build
           # pinned upstream sources with --disable-shared into a private prefix.
           DEP="$PWD/tor-deps"; mkdir -p "$DEP"
-          build_one() { # name url dir configure-args...
-            n="$1"; u="$2"; d="$3"; shift 3
+          build_one() { # name url dir zlib|Configure|configure extra-args...
+            n="$1"; u="$2"; d="$3"; kind="$4"; shift 4
             curl -fsSLo "$n.tar.gz" "$u" && tar xzf "$n.tar.gz"
-            cd "$d" && ./configure --prefix="$DEP" --disable-shared "$@" && make -j"$(sysctl -n hw.ncpu)" && make install && cd -
+            cd "$d"
+            case "$kind" in
+              zlib)      ./configure --prefix="$DEP" --static ;;
+              Configure) ./Configure --prefix="$DEP" "$@" ;;
+              *)         ./configure --prefix="$DEP" "$@" ;;
+            esac
+            make -j"$(sysctl -n hw.ncpu)" && make install && cd -
           }
-          build_one zlib-1.3.1 "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz" zlib-1.3.1
-          build_one openssl-3.4.1 "https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz" openssl-3.4.1 no-tests
-          build_one libevent-2.1.12-stable "https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/libevent-2.1.12-stable.tar.gz" libevent-2.1.12-stable --disable-openssl --disable-libevent-regress
+          build_one zlib-1.3.1 "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz" zlib-1.3.1 zlib
+          build_one openssl-3.4.1 "https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz" openssl-3.4.1 Configure no-shared no-tests
+          build_one libevent-2.1.12-stable "https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/libevent-2.1.12-stable.tar.gz" libevent-2.1.12-stable configure --disable-shared --disable-openssl --disable-libevent-regress
       - name: Fetch tor source (hash-pinned)
         run: |
           VER=${{ needs.resolve.outputs.tor_tag }}

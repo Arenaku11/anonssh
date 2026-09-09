@@ -266,7 +266,7 @@ jobs:
             echo "snowflake=v2.11.0"
             cd internal/embed/bin
             sha256sum * | sed 's/^/sha256 /'
-          } > ../../internal/embed/manifest.txt
+          } > internal/embed/manifest.txt
           cat internal/embed/manifest.txt
       - name: Commit embedded binaries
         run: |

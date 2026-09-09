@@ -1,0 +1,204 @@
+name: embed
+
+# Builds tor + pluggable transports from pinned upstream sources on native
+# runners and commits the artifacts under internal/embed/bin/ for go:embed.
+# Run manually (Actions tab) or after changing pins. Resolves the latest
+# stable tor tag when no tag is given; SHA256 of every artifact is recorded
+# in internal/embed/manifest.txt.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tor_tag:
+        description: "tor tag (empty = latest stable from GitLab)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tor_tag: ${{ steps.tag.outputs.tor_tag }}
+    steps:
+      - id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tor_tag }}" ]; then
+            echo "tor_tag=${{ github.event.inputs.tor_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(curl -fsSL "https://gitlab.torproject.org/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?per_page=100" \
+              | jq -r '[.[] | .name | select(test("^tor-[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"))][0]')
+            echo "tor_tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved tor tag: $TAG"
+
+  build-linux:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y libevent-dev libssl-dev zlib1g-dev autoconf automake libtool pkg-config
+      - name: Fetch tor source (hash-pinned)
+        run: |
+          VER=${{ needs.resolve.outputs.tor_tag }}
+          URL="https://dist.torproject.org/tor-${VER#tor-}.tar.gz"
+          curl -fsSLo tor.tar.gz "$URL"
+          echo "TAR_SHA=$(sha256sum tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
+      - name: Build static tor
+        run: |
+          cd tor-src
+          ./autogen.sh
+          ./configure --disable-gcc-hardening --enable-static-tor \
+            LDFLAGS="-static-libgcc" LIBS="-lpthread -ldl -lm" \
+            --with-zlib-dir=/usr --with-libevent-dir=/usr --with-openssl-dir=/usr
+          make -j"$(nproc)"
+          strip src/app/tor
+          file src/app/tor
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tor-linux-amd64
+          path: tor-src/src/app/tor
+      - name: Record hashes
+        run: echo "tor-linux-amd64 sha256=$(sha256sum tor-src/src/app/tor | cut -d' ' -f1) tarball=$TAR_SHA" >> hashes.txt
+
+  build-windows:
+    needs: resolve
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            git make autoconf automake libtool pkg-config mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-libevent mingw-w64-x86_64-openssl mingw-w64-x86_64-zlib
+      - name: Fetch tor source (hash-pinned)
+        run: |
+          VER=${{ needs.resolve.outputs.tor_tag }}
+          URL="https://dist.torproject.org/tor-${VER#tor-}.tar.gz"
+          curl -fsSLo tor.tar.gz "$URL"
+          echo "TAR_SHA=$(sha256sum tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
+      - name: Build tor
+        run: |
+          cd tor-src
+          ./autogen.sh
+          ./configure --disable-gcc-hardening \
+            --with-zlib-dir=/mingw64 --with-libevent-dir=/mingw64 --with-openssl-dir=/mingw64
+          make -j"$(nproc)"
+          strip src/app/tor.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tor-windows-amd64
+          path: tor-src/src/app/tor.exe
+      - name: Record hashes
+        run: echo "tor-windows-amd64 sha256=$(sha256sum tor-src/src/app/tor.exe | cut -d' ' -f1) tarball=$TAR_SHA" >> hashes.txt
+
+  build-macos:
+    needs: resolve
+    runs-on: macos-14
+    steps:
+      - run: brew install autoconf automake libtool pkg-config openssl@3 libevent zstd lz4
+      - name: Fetch tor source (hash-pinned)
+        run: |
+          VER=${{ needs.resolve.outputs.tor_tag }}
+          URL="https://dist.torproject.org/tor-${VER#tor-}.tar.gz"
+          curl -fsSLo tor.tar.gz "$URL"
+          echo "TAR_SHA=$(sha256sum tor.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
+      - name: Build tor
+        run: |
+          cd tor-src
+          ./autogen.sh
+          ./configure --disable-gcc-hardening \
+            --with-openssl-dir="$(brew --prefix openssl@3)" \
+            --with-libevent-dir="$(brew --prefix)" \
+            CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib"
+          make -j"$(sysctl -n hw.ncpu)"
+          strip src/app/tor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tor-darwin-arm64
+          path: tor-src/src/app/tor
+      - name: Record hashes
+        run: echo "tor-darwin-arm64 sha256=$(shasum -a 256 tor-src/src/app/tor | cut -d' ' -f1) tarball=$TAR_SHA" >> hashes.txt
+
+  transports:
+    # obfs4proxy and snowflake-client are pure Go; cross-compile from pins.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { os: linux, arch: amd64 }
+          - { os: windows, arch: amd64 }
+          - { os: darwin, arch: arm64 }
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Build obfs4proxy
+        run: |
+          git clone --depth 1 --branch obfs4proxy-0.0.14 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/obfs4.git
+          cd obfs4/obfs4proxy
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w" -o obfs4proxy .
+      - name: Build snowflake-client
+        run: |
+          git clone --depth 1 --branch v2.11.0 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake.git
+          cd snowflake/client
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w" -o snowflake-client .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pt-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            obfs4/obfs4proxy/obfs4proxy*
+            snowflake/client/snowflake-client*
+
+  embed:
+    needs: [resolve, build-linux, build-windows, build-macos, transports]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage binaries
+        run: |
+          mkdir -p internal/embed/bin
+          cp artifacts/tor-linux-amd64/tor        internal/embed/bin/tor-linux-amd64
+          cp artifacts/tor-windows-amd64/tor.exe  internal/embed/bin/tor-windows-amd64.exe
+          cp artifacts/tor-darwin-arm64/tor       internal/embed/bin/tor-darwin-arm64
+          for f in artifacts/pt-*/*; do
+            base=$(basename "$f")
+            osarch="${f#artifacts/pt-}"; osarch="${osarch%/*}"
+            case "$base" in
+              obfs4proxy*)      cp "$f" "internal/embed/bin/obfs4proxy-$osarch${base#obfs4proxy}" ;;
+              snowflake-client*) cp "$f" "internal/embed/bin/snowflake-client-$osarch${base#snowflake-client}" ;;
+            esac
+          done
+          ls -la internal/embed/bin/
+      - name: Manifest
+        run: |
+          {
+            echo "# Generated by embed workflow. Do not edit."
+            echo "tor_tag=${{ needs.resolve.outputs.tor_tag }}"
+            echo "obfs4proxy=obfs4proxy-0.0.14"
+            echo "snowflake=v2.11.0"
+            cd internal/embed/bin
+            sha256sum * | sed 's/^/sha256 /'
+          } > ../../internal/embed/manifest.txt
+          cat internal/embed/manifest.txt
+      - name: Commit embedded binaries
+        run: |
+          git config user.name "Arenaku11"
+          git config user.email "315315110+Arenaku11@users.noreply.github.com"
+          git add internal/embed
+          git commit -m "embed: tor ${{ needs.resolve.outputs.tor_tag }} + obfs4proxy-0.0.14 + snowflake v2.11.0"
+          git push origin HEAD:main

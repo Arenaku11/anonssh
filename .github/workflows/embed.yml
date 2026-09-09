@@ -147,6 +147,7 @@ jobs:
           tar xzf tor.tar.gz && mv "tor-${VER#tor-}" tor-src
       - name: Build tor
         run: |
+          DEPS="$PWD/tor-deps"
           cd tor-src
           if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi
           # macOS has no static libc: statically link the three deps,

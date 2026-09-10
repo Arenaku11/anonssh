@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,7 +9,7 @@ use arti_client::{TorClient, TorClientConfig};
 use clap::Parser;
 use russh::client;
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::{ChannelMsg, Disconnect};
+use russh::{ChannelMsg, Disconnect, SshId};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -16,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[command(version, about = "Single-process SSH client over embedded Arti Tor")]
 struct Cli {
     /// SSH destination in user@host form.
-    destination: String,
+    destination: Option<String>,
 
     /// SSH port.
     #[arg(short = 'p', long, default_value_t = 22)]
@@ -45,6 +46,10 @@ struct Cli {
     /// Show Arti/Russh diagnostics.
     #[arg(short = 'v', long)]
     verbose: bool,
+
+    /// Bootstrap in-process Tor and exit. Intended for installation/CI verification.
+    #[arg(long, hide = true)]
+    bootstrap_only: bool,
 }
 
 #[derive(Clone)]
@@ -78,13 +83,22 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let (user, host) = parse_destination(&cli.destination)?;
     let (_temporary_storage, tor_config) = tor_config(cli.state_dir.as_ref())?;
 
     eprintln!("anonssh: bootstrapping in-process Tor (Arti)...");
     let tor = TorClient::create_bootstrapped(tor_config)
         .await
         .context("bootstrap Arti")?;
+    if cli.bootstrap_only {
+        eprintln!("anonssh: in-process Tor bootstrap complete");
+        return Ok(());
+    }
+
+    let destination = cli
+        .destination
+        .as_deref()
+        .context("destination must be user@host")?;
+    let (user, host) = parse_destination(destination)?;
     let isolated = tor.isolated_client();
     let stream = isolated
         .connect((host.as_str(), cli.port))
@@ -92,6 +106,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("connect through Tor to {host}:{}", cli.port))?;
 
     let config = Arc::new(client::Config {
+        client_id: random_client_id(),
         inactivity_timeout: Some(Duration::from_secs(300)),
         ..Default::default()
     });
@@ -256,6 +271,19 @@ async fn receive_channel(channel: &mut russh::Channel<client::Msg>) -> Result<u3
 
 fn normalize_fingerprint(value: &str) -> String {
     value.trim().trim_start_matches("SHA256:").to_owned()
+}
+
+fn random_client_id() -> SshId {
+    const CLIENT_IDS: &[&str] = &[
+        "SSH-2.0-OpenSSH_8.9",
+        "SSH-2.0-OpenSSH_9.2",
+        "SSH-2.0-OpenSSH_9.3",
+        "SSH-2.0-OpenSSH_9.5",
+        "SSH-2.0-OpenSSH_9.6",
+        "SSH-2.0-OpenSSH_9.7",
+    ];
+    let id = CLIENT_IDS[rand::random_range(..CLIENT_IDS.len())];
+    SshId::Standard(Cow::Owned(id.to_owned()))
 }
 
 #[cfg(test)]

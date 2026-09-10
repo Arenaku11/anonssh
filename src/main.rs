@@ -3,9 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use arti_client::{TorClient, TorClientConfig};
+use arti_client::{TorClient, TorClientConfig, TorClientConfigBuilder};
 use clap::Parser;
-use rand::rngs::SysRng;
 use russh::client;
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect};
@@ -59,7 +58,7 @@ impl client::Handler for Handler {
         &mut self,
         key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let got = key.fingerprint(HashAlg::Sha256).to_string();
+        let got = key.public_key().fingerprint(HashAlg::Sha256).to_string();
         if let Some(expected) = &self.expected_fingerprint {
             return Ok(normalize_fingerprint(expected) == normalize_fingerprint(&got));
         }
@@ -149,14 +148,14 @@ fn tor_config(state_dir: Option<&PathBuf>) -> Result<(Option<TempDir>, TorClient
     if let Some(state_dir) = state_dir {
         let cache_dir = state_dir.join("cache");
         let state_dir = state_dir.join("state");
-        let config = TorClientConfig::from_directories(state_dir, cache_dir)
+        let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir)
             .build()
             .context("build persistent Arti configuration")?;
         return Ok((None, config));
     }
 
     let storage = tempfile::tempdir().context("create temporary Arti storage")?;
-    let config = TorClientConfig::from_directories(
+    let config = TorClientConfigBuilder::from_directories(
         storage.path().join("state"),
         storage.path().join("cache"),
     )
@@ -169,7 +168,7 @@ fn load_or_generate_key(path: Option<&PathBuf>) -> Result<PrivateKey> {
     match path {
         Some(path) => PrivateKey::read_openssh_file(path)
             .with_context(|| format!("read private key {}", path.display())),
-        None => PrivateKey::random(&mut SysRng, Algorithm::Ed25519)
+        None => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .context("generate ephemeral Ed25519 key"),
     }
 }
@@ -200,7 +199,7 @@ where
     result
 }
 
-async fn interact<S>(channel: &mut russh::Channel<S>) -> Result<u32> {
+async fn interact(channel: &mut russh::Channel<client::Msg>) -> Result<u32> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
@@ -237,7 +236,7 @@ async fn interact<S>(channel: &mut russh::Channel<S>) -> Result<u32> {
     Ok(exit_status)
 }
 
-async fn receive_channel<S>(channel: &mut russh::Channel<S>) -> Result<u32> {
+async fn receive_channel(channel: &mut russh::Channel<client::Msg>) -> Result<u32> {
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
     let mut exit_status = 0;

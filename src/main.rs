@@ -13,6 +13,13 @@ use russh::{ChannelMsg, Disconnect, SshId};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+fn install_crypto_provider() {
+    // Both `ring` and `aws-lc-rs` are in the dependency tree; rustls 0.23
+    // panics at runtime when the process-wide provider is ambiguous unless
+    // one is installed explicitly. Pin to `ring`.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about = "Single-process SSH client over embedded Arti Tor")]
 struct Cli {
@@ -75,6 +82,7 @@ impl client::Handler for Handler {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_crypto_provider();
     let cli = Cli::parse();
     if cli.verbose {
         tracing_subscriber::fmt()

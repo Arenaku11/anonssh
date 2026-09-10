@@ -13,6 +13,7 @@ crossterm = "0.29"
 rand = "0.10"
 rpassword = "7.4"
 russh = "0.63.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3.23"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -120,6 +120,7 @@ dependencies = [
  "rand 0.10.2",
  "rpassword",
  "russh",
+ "rustls",
  "tempfile",
  "tokio",
  "tracing-subscriber",
@@ -3812,6 +3813,7 @@ checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
 dependencies = [
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

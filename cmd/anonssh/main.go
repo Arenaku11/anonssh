@@ -62,11 +62,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *verbose {
-		log.SetOutput(os.Stderr)
-	} else {
-		log.SetOutput(io.Discard)
-	}
+	log.SetOutput(os.Stderr)
 
 	// Parse user@host.
 	args := flag.Args()

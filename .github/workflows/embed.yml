@@ -264,7 +264,7 @@ jobs:
           cat artifacts/geoip-linux/tarball-sha.txt >> internal/embed/manifest.txt 2>/dev/null || true
           echo "obfs4proxy=obfs4proxy-0.0.14" >> internal/embed/manifest.txt
           echo "snowflake=v2.11.0" >> internal/embed/manifest.txt
-          # Hash all binaries, strip directory prefix, format as "sha256 NAME HASH".
+          # Hash all binaries, strip directory prefix, format as "sha256 HASH NAME".
           sha256sum internal/embed/bin/* | sed 's|internal/embed/bin/||;s/  / /;s/^/sha256 /' >> internal/embed/manifest.txt
           cat internal/embed/manifest.txt
       - name: Commit embedded binaries

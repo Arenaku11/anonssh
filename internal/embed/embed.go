@@ -5,6 +5,7 @@
 package embed
 
 import (
+	"crypto/sha256"
 	"embed"
 	"errors"
 	"fmt"
@@ -18,8 +19,8 @@ var content embed.FS
 // Manifest is the parsed key=value set from manifest.txt.
 type Manifest map[string]string
 
-// ManifestParsed reads manifest.txt. Keys are lowercase; hash lines appear
-// as "sha256 <name> <hash>" flattened to "sha256:<name>" = "<hash>".
+// ManifestParsed reads manifest.txt. Hash lines use sha256sum's output order:
+// "sha256 <hash> <name>", flattened to "sha256:<name>" = "<hash>".
 func ManifestParsed() (Manifest, error) {
 	data, err := content.ReadFile("manifest.txt")
 	if err != nil {
@@ -31,7 +32,7 @@ func ManifestParsed() (Manifest, error) {
 			continue
 		}
 		var k, v string
-		if n, _ := fmt.Sscanf(line, "sha256 %s %s", &k, &v); n == 2 {
+		if n, _ := fmt.Sscanf(line, "sha256 %s %s", &v, &k); n == 2 {
 			m["sha256:"+k] = v
 			continue
 		}
@@ -79,9 +80,7 @@ func TransportBytes(transport string) ([]byte, error) {
 	return fs.ReadFile(content, name)
 }
 
-// VerifyAll checks that every bin/ file has a matching sha256 entry in the
-// manifest. Called at startup; a mismatch means the committed tree and the
-// manifest disagree, which is a build-integrity error, not a runtime one.
+// VerifyAll checks every embedded binary against its manifest SHA256.
 func VerifyAll() error {
 	m, err := ManifestParsed()
 	if err != nil {
@@ -91,17 +90,22 @@ func VerifyAll() error {
 	if err != nil {
 		return err
 	}
-	var missing []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		if m["sha256:"+e.Name()] == "" {
-			missing = append(missing, e.Name())
+		want := m["sha256:"+e.Name()]
+		if want == "" {
+			return fmt.Errorf("no manifest sha256 for %s", e.Name())
 		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("no manifest sha256 for: %v", missing)
+		data, err := content.ReadFile("bin/" + e.Name())
+		if err != nil {
+			return err
+		}
+		got := fmt.Sprintf("%x", sha256.Sum256(data))
+		if got != want {
+			return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", e.Name(), got, want)
+		}
 	}
 	return nil
 }

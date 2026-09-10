@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use arti_client::{TorClient, TorClientConfig, TorClientConfigBuilder};
+use arti_client::config::TorClientConfigBuilder;
+use arti_client::{TorClient, TorClientConfig};
 use clap::Parser;
 use russh::client;
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};

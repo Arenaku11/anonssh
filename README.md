@@ -1,44 +1,63 @@
 # anonssh
 
-Single-binary anonymous SSH client. The tor daemon and pluggable transports
-are embedded; no external dependencies at run time.
+Single-process SSH client whose network connection is created by the embedded
+Arti Tor implementation. No external Tor daemon is required.
 
-```
+```text
 anonssh user@host [-p 22] [--cmd "uname -a"] [--key id_ed25519]
-                  [--exit-country US,DE] [--bridges obfs4|snowflake]
+                  [--fingerprint SHA256:...]
+                  [--proxy socks5h://127.0.0.1:7890]
+                  [--bridge "snowflake ..."] [--pt-path lyrebird]
 ```
 
-What it does per session:
+## Session behavior
 
-1. Extracts an embedded tor build into a fresh temp directory and bootstraps
-   (progress on stderr).
-2. Queries the Onionoo directory **through tor** for exit relays whose policy
-   permits the target port, filters by `--exit-country` if given, pins one at
-   random (rotates every session).
-3. Connects through that exit with a randomized OpenSSH client banner
-   (fingerprint pool, drawn fresh per session).
-4. Authenticates with a session-ephemeral ed25519 key by default (never
-   reused, never persisted; falls back to a password prompt on refusal).
-   `--key` uses your own identity file instead.
-5. Validates the host key in memory only (TOFU per run, never written to
-   disk). `--fingerprint` pins an expected fingerprint.
-6. On exit: tor is stopped, the temp directory is deleted, nothing remains.
+1. Bootstraps Tor in-process with Arti.
+2. Creates an isolated Arti client for the SSH connection.
+3. Uses an in-memory Ed25519 authentication key by default. `--key` loads an
+   OpenSSH private key instead.
+4. Accepts the server host key for the current run only, or verifies the exact
+   SHA256 fingerprint supplied by `--fingerprint`.
+5. Opens an SSH command or interactive terminal through the Tor circuit.
+6. Deletes temporary Arti state on exit unless `--state-dir` is supplied.
+
+`--proxy` sets an upstream SOCKS4/SOCKS5/HTTP CONNECT proxy for every direct
+Arti connection. Use `socks5h://127.0.0.1:7890` when a local proxy is needed to
+reach Tor without local DNS resolution.
+
+`--bridge` is repeatable and accepts Tor bridge lines. Managed pluggable
+transports require `--pt-path`; Tor Browser's `lyrebird` supports obfs4,
+Snowflake, meek_lite, and WebTunnel.
 
 ## Fingerprint discipline
 
-- Client version banner: randomized from a pool of common OpenSSH versions.
-- Host key: verified in memory per run; never touches `known_hosts`.
-- Client auth key: ephemeral by default; the server never sees the same
-  public key twice across sessions.
-- Exit relay: different every session by default.
-- Tor state (guards, cached consensuses): fresh temp dir per run unless
-  `--tor-state-dir` is given.
+- SSH banner and KEXINIT use one stable population profile rather than random,
+  internally inconsistent combinations.
+- The wire-level HASSH source is covered by a regression test; its current MD5
+  is `905ba763813042a5e5327b92d4a053a0`.
+- Authentication keys are generated per process unless `--key` is used.
+- Host keys are not persisted by anonssh.
+- Arti circuits are isolated per SSH connection.
 
-Known limits: tor hides the network path, not local traffic correlation; a
-local observer can still see that connections happen. Password authentication
-is kept as a fallback but a reused password is itself a fingerprint.
+## Limits
+
+Tor is a low-latency anonymity network and does not defeat a global traffic
+correlation observer. Reused passwords, usernames, commands, timing, and
+application behavior can still link sessions. A Tor exit sees the destination
+IP and port; SSH content remains end-to-end encrypted.
+
+Direct Tor bootstrap may be blocked or degraded on censored networks. Use a
+working upstream proxy and/or current bridge lines. Bridge availability is an
+external network property, not bundled into this executable.
+
+## Build
+
+```text
+cargo build --release --locked
+cargo test --locked
+```
 
 ## License
 
-MIT. Embedded third-party components are BSD/Apache-licensed; see
+MIT. Third-party Rust dependencies retain their own licenses; see
 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).

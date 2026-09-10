@@ -7,7 +7,7 @@ description = "Single-process SSH client over embedded Arti Tor"
 
 [dependencies]
 anyhow = "1.0"
-arti-client = { version = "0.46.0", default-features = false, features = ["tokio", "rustls", "static-sqlite"] }
+arti-client = { version = "0.46.0", default-features = false, features = ["tokio", "rustls", "static-sqlite", "pt-client", "compression"] }
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
 rand = "0.10"
@@ -16,4 +16,8 @@ russh = "0.63.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3.23"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal"] }
+tor-chanmgr = "0.46.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+md5 = "0.8"

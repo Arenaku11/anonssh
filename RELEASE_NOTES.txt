@@ -1,0 +1,13 @@
+anonssh v0.2.0-beta.1
+
+Pre-release highlights:
+- In-process Arti Tor routing with isolated SSH circuits.
+- Real --exit-country routing through Arti StreamPrefs.
+- Keyboard-interactive PAM/OTP/2FA authentication.
+- OpenSSH, PEM, PKCS#8, PuTTY, and encrypted private-key loading.
+- Command stdin forwarding and reliable EOF handling.
+- Reliable terminal restoration and temporary Arti state cleanup.
+- Ctrl+C cancellation during Tor bootstrap and connection.
+- Automatic lyrebird/pluggable-transport discovery and validation.
+
+Security note: selecting an exit country reduces the anonymity set and can reduce connection reliability. Tor remains vulnerable to sufficiently capable traffic-correlation observers.

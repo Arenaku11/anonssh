@@ -1,16 +1,19 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use arti_client::config::pt::TransportConfigBuilder;
 use arti_client::config::{BoolOrAuto, BridgeConfigBuilder, CfgPath, TorClientConfigBuilder};
-use arti_client::{TorClient, TorClientConfig};
+use arti_client::{CountryCode, StreamPrefs, TorClient, TorClientConfig};
 use clap::Parser;
 use russh::client;
+use russh::client::{AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::{ChannelMsg, Disconnect, Preferred, SshId, cipher, compression, kex, mac};
+use russh::{
+    ChannelMsg, Disconnect, MethodKind, MethodSet, Preferred, SshId, cipher, compression, kex, mac,
+};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tor_chanmgr::ProxyProtocol;
@@ -60,6 +63,10 @@ struct Cli {
     #[arg(long)]
     proxy: Option<String>,
 
+    /// Restrict the Tor exit to this two-letter country code. This reduces the anonymity set.
+    #[arg(long)]
+    exit_country: Option<CountryCode>,
+
     /// Execute a command instead of opening an interactive shell.
     #[arg(long)]
     cmd: Option<String>,
@@ -95,7 +102,17 @@ impl client::Handler for Handler {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(code) => ExitCode::from(code),
+        Err(error) => {
+            eprintln!("anonssh: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<u8> {
     install_crypto_provider();
     let cli = Cli::parse();
     if cli.verbose {
@@ -105,6 +122,18 @@ async fn main() -> Result<()> {
             .init();
     }
 
+    let destination = if cli.bootstrap_only {
+        None
+    } else {
+        let destination = cli
+            .destination
+            .as_deref()
+            .context("destination must be user@host")?;
+        let (user, host) = parse_destination(destination)?;
+        validate_exit_country_target(cli.exit_country.as_ref(), &host)?;
+        Some((user, host))
+    };
+
     let (_temporary_storage, tor_config) = tor_config_with_bridges(
         cli.state_dir.as_ref(),
         &cli.bridges,
@@ -113,24 +142,35 @@ async fn main() -> Result<()> {
     )?;
 
     eprintln!("anonssh: bootstrapping in-process Tor (Arti)...");
-    let tor = TorClient::create_bootstrapped(tor_config)
-        .await
-        .context("bootstrap Arti")?;
+    let tor = tokio::select! {
+        result = TorClient::create_bootstrapped(tor_config) => result.context("bootstrap Arti")?,
+        result = tokio::signal::ctrl_c() => {
+            result.context("install Ctrl+C handler")?;
+            bail!("cancelled while bootstrapping Tor");
+        }
+    };
     if cli.bootstrap_only {
         eprintln!("anonssh: in-process Tor bootstrap complete");
-        return Ok(());
+        return Ok(0);
     }
 
-    let destination = cli
-        .destination
-        .as_deref()
-        .context("destination must be user@host")?;
-    let (user, host) = parse_destination(destination)?;
+    let (user, host) = destination.expect("validated non-bootstrap destination");
     let isolated = tor.isolated_client();
-    let stream = isolated
-        .connect((host.as_str(), cli.port))
-        .await
-        .with_context(|| format!("connect through Tor to {host}:{}", cli.port))?;
+    let mut prefs = StreamPrefs::new();
+    prefs.new_isolation_group();
+    if let Some(country) = cli.exit_country {
+        eprintln!("anonssh: restricting exit country to {country}; this reduces the anonymity set");
+        prefs.exit_country(country);
+    }
+    let stream = tokio::select! {
+        result = isolated.connect_with_prefs((host.as_str(), cli.port), &prefs) => {
+            result.with_context(|| format!("connect through Tor to {host}:{}", cli.port))?
+        }
+        result = tokio::signal::ctrl_c() => {
+            result.context("install Ctrl+C handler")?;
+            bail!("cancelled while connecting through Tor");
+        }
+    };
 
     let config = Arc::new(ssh_client_config());
     let handler = Handler {
@@ -140,31 +180,7 @@ async fn main() -> Result<()> {
         .await
         .context("SSH handshake")?;
 
-    let key = load_or_generate_key(cli.key.as_ref())?;
-    let publickey = ssh
-        .authenticate_publickey(
-            &user,
-            PrivateKeyWithHashAlg::new(
-                Arc::new(key),
-                ssh.best_supported_rsa_hash().await?.flatten(),
-            ),
-        )
-        .await
-        .context("public-key authentication")?;
-
-    if !publickey.success() {
-        let password = match cli.password {
-            Some(password) => password,
-            None => rpassword::prompt_password("SSH password: ").context("read password")?,
-        };
-        let password_result = ssh
-            .authenticate_password(&user, password)
-            .await
-            .context("password authentication")?;
-        if !password_result.success() {
-            bail!("SSH authentication failed");
-        }
-    }
+    authenticate(&mut ssh, &user, cli.key.as_ref(), cli.password.as_deref()).await?;
 
     let exit = match cli.cmd {
         Some(command) => run_command(&ssh, &command).await?,
@@ -173,7 +189,7 @@ async fn main() -> Result<()> {
     ssh.disconnect(Disconnect::ByApplication, "", "")
         .await
         .context("disconnect SSH")?;
-    std::process::exit(exit as i32);
+    Ok(exit.min(u8::MAX as u32) as u8)
 }
 
 fn parse_destination(destination: &str) -> Result<(String, String)> {
@@ -184,6 +200,13 @@ fn parse_destination(destination: &str) -> Result<(String, String)> {
         bail!("destination must be user@host");
     }
     Ok((user.to_owned(), host.to_owned()))
+}
+
+fn validate_exit_country_target(country: Option<&CountryCode>, host: &str) -> Result<()> {
+    if country.is_some() && host.to_ascii_lowercase().ends_with(".onion") {
+        bail!("--exit-country cannot be used with an onion service");
+    }
+    Ok(())
 }
 
 fn tor_config_with_bridges(
@@ -236,12 +259,7 @@ fn apply_bridges(
     if bridges.is_empty() {
         return Ok(());
     }
-    let pt_path = match pt_path {
-        Some(path) => path.clone(),
-        None => std::env::var("ANONSSH_PT_PATH")
-            .map(PathBuf::from)
-            .context("--bridge requires --pt-path (or ANONSSH_PT_PATH env)")?,
-    };
+    let pt_path = resolve_pt_path(pt_path)?;
 
     let mut parsed_bridges = Vec::with_capacity(bridges.len());
     let mut protocols = Vec::new();
@@ -276,13 +294,202 @@ fn apply_bridges(
     Ok(())
 }
 
+fn resolve_pt_path(explicit: Option<&PathBuf>) -> Result<PathBuf> {
+    let candidate = explicit
+        .cloned()
+        .or_else(|| std::env::var_os("ANONSSH_PT_PATH").map(PathBuf::from))
+        .or_else(find_pt_on_path)
+        .or_else(find_tor_browser_pt)
+        .context(
+            "bridge requires --pt-path, ANONSSH_PT_PATH, or a discoverable lyrebird executable",
+        )?;
+    if !candidate.is_file() {
+        bail!("pluggable transport is not a file: {}", candidate.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if candidate.metadata()?.permissions().mode() & 0o111 == 0 {
+            bail!(
+                "pluggable transport is not executable: {}",
+                candidate.display()
+            );
+        }
+    }
+    Ok(candidate)
+}
+
+fn find_pt_on_path() -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["lyrebird.exe", "snowflake-client.exe"]
+    } else {
+        &["lyrebird", "snowflake-client"]
+    };
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn find_tor_browser_pt() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .map(|base| {
+            base.join("Tor Browser/Browser/TorBrowser/Tor/PluggableTransports/lyrebird.exe")
+        })
+        .find(|candidate| candidate.is_file())
+}
+
 fn load_or_generate_key(path: Option<&PathBuf>) -> Result<PrivateKey> {
     match path {
-        Some(path) => PrivateKey::read_openssh_file(path)
-            .with_context(|| format!("read private key {}", path.display())),
+        Some(path) => match russh::keys::load_secret_key(path, None) {
+            Ok(key) => Ok(key),
+            Err(russh::keys::Error::KeyIsEncrypted) => {
+                let passphrase = rpassword::prompt_password("Private key passphrase: ")
+                    .context("read private key passphrase")?;
+                russh::keys::load_secret_key(path, Some(&passphrase))
+                    .with_context(|| format!("decrypt private key {}", path.display()))
+            }
+            Err(error) => {
+                Err(error).with_context(|| format!("read private key {}", path.display()))
+            }
+        },
         None => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .context("generate ephemeral Ed25519 key"),
     }
+}
+
+async fn authenticate<H: client::Handler>(
+    ssh: &mut client::Handle<H>,
+    user: &str,
+    key_path: Option<&PathBuf>,
+    configured_password: Option<&str>,
+) -> Result<()>
+where
+    H::Error: Send,
+{
+    let key = load_or_generate_key(key_path)?;
+    let publickey = ssh
+        .authenticate_publickey(
+            user,
+            PrivateKeyWithHashAlg::new(
+                Arc::new(key),
+                ssh.best_supported_rsa_hash().await?.flatten(),
+            ),
+        )
+        .await
+        .context("public-key authentication")?;
+    if publickey.success() {
+        return Ok(());
+    }
+
+    let mut remaining = auth_remaining(&publickey);
+    if remaining
+        .iter()
+        .any(|method| *method == MethodKind::Password)
+    {
+        let password = match configured_password {
+            Some(password) => password.to_owned(),
+            None => rpassword::prompt_password("SSH password: ").context("read password")?,
+        };
+        let password_result = ssh
+            .authenticate_password(user, password)
+            .await
+            .context("password authentication")?;
+        if password_result.success() {
+            return Ok(());
+        }
+        remaining = auth_remaining(&password_result);
+    }
+
+    if remaining
+        .iter()
+        .any(|method| *method == MethodKind::KeyboardInteractive)
+    {
+        let mut response = ssh
+            .authenticate_keyboard_interactive_start(user, None)
+            .await
+            .context("start keyboard-interactive authentication")?;
+        loop {
+            match response {
+                KeyboardInteractiveAuthResponse::Success => return Ok(()),
+                KeyboardInteractiveAuthResponse::Failure {
+                    remaining_methods,
+                    partial_success,
+                } => {
+                    bail!(
+                        "SSH authentication failed (remaining methods: {}; partial success: {partial_success})",
+                        format_methods(&remaining_methods)
+                    );
+                }
+                KeyboardInteractiveAuthResponse::InfoRequest {
+                    name,
+                    instructions,
+                    prompts,
+                } => {
+                    if !name.is_empty() {
+                        eprintln!("{name}");
+                    }
+                    if !instructions.is_empty() {
+                        eprintln!("{instructions}");
+                    }
+                    let use_configured =
+                        configured_password.filter(|_| prompts.len() == 1 && !prompts[0].echo);
+                    let mut answers = Vec::with_capacity(prompts.len());
+                    for prompt in prompts {
+                        let answer = if let Some(password) = use_configured {
+                            password.to_owned()
+                        } else if prompt.echo {
+                            use std::io::Write as _;
+                            eprint!("{}", prompt.prompt);
+                            std::io::stderr().flush()?;
+                            let mut answer = String::new();
+                            std::io::stdin().read_line(&mut answer)?;
+                            answer.trim_end_matches(['\r', '\n']).to_owned()
+                        } else {
+                            rpassword::prompt_password(prompt.prompt)?
+                        };
+                        answers.push(answer);
+                    }
+                    response = ssh
+                        .authenticate_keyboard_interactive_respond(answers)
+                        .await
+                        .context("respond to keyboard-interactive authentication")?;
+                }
+            }
+        }
+    }
+
+    bail!(
+        "SSH authentication failed (remaining methods: {})",
+        format_methods(&remaining)
+    )
+}
+
+fn auth_remaining(result: &AuthResult) -> MethodSet {
+    match result {
+        AuthResult::Success => MethodSet::empty(),
+        AuthResult::Failure {
+            remaining_methods, ..
+        } => remaining_methods.clone(),
+    }
+}
+
+fn format_methods(methods: &MethodSet) -> String {
+    if methods.is_empty() {
+        return "none".to_owned();
+    }
+    methods
+        .iter()
+        .map(|method| <&str>::from(method))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 async fn run_command<H: client::Handler>(ssh: &client::Handle<H>, command: &str) -> Result<u32>
@@ -291,7 +498,7 @@ where
 {
     let mut channel = ssh.channel_open_session().await?;
     channel.exec(true, command).await?;
-    receive_channel(&mut channel).await
+    interact(&mut channel).await
 }
 
 async fn run_shell<H: client::Handler>(ssh: &client::Handle<H>) -> Result<u32>
@@ -313,10 +520,23 @@ where
         .await?;
     channel.request_shell(true).await?;
 
-    crossterm::terminal::enable_raw_mode().context("enable terminal raw mode")?;
-    let result = interact(&mut channel).await;
-    crossterm::terminal::disable_raw_mode().context("disable terminal raw mode")?;
-    result
+    let _raw_mode = RawModeGuard::enable()?;
+    interact(&mut channel).await
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self> {
+        crossterm::terminal::enable_raw_mode().context("enable terminal raw mode")?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
 }
 
 async fn interact(channel: &mut russh::Channel<client::Msg>) -> Result<u32> {
@@ -325,13 +545,15 @@ async fn interact(channel: &mut russh::Channel<client::Msg>) -> Result<u32> {
     let mut stderr = tokio::io::stderr();
     let mut input = [0_u8; 4096];
     let mut exit_status = 0;
+    let mut stdin_open = true;
 
     loop {
         tokio::select! {
-            read = stdin.read(&mut input) => {
+            read = stdin.read(&mut input), if stdin_open => {
                 let count = read?;
                 if count == 0 {
                     channel.eof().await?;
+                    stdin_open = false;
                 } else {
                     channel.data(&input[..count]).await?;
                 }
@@ -353,25 +575,6 @@ async fn interact(channel: &mut russh::Channel<client::Msg>) -> Result<u32> {
             }
         }
     }
-    Ok(exit_status)
-}
-
-async fn receive_channel(channel: &mut russh::Channel<client::Msg>) -> Result<u32> {
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-    let mut exit_status = 0;
-    while let Some(message) = channel.wait().await {
-        match message {
-            ChannelMsg::Data { data } => stdout.write_all(&data).await?,
-            ChannelMsg::ExtendedData { data, .. } => stderr.write_all(&data).await?,
-            ChannelMsg::ExitStatus {
-                exit_status: status,
-            } => exit_status = status,
-            _ => {}
-        }
-    }
-    stdout.flush().await?;
-    stderr.flush().await?;
     Ok(exit_status)
 }
 
@@ -426,7 +629,7 @@ fn ssh_client_config() -> client::Config {
             mac: Cow::Borrowed(PROFILE_MACS),
             compression: Cow::Borrowed(PROFILE_COMPRESSION),
         },
-        inactivity_timeout: Some(Duration::from_secs(300)),
+        inactivity_timeout: None,
         ..Default::default()
     }
 }
@@ -453,6 +656,7 @@ fn hassh_source(preferred: &Preferred) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -467,6 +671,49 @@ mod tests {
     fn normalizes_sha256_fingerprint() {
         assert_eq!(normalize_fingerprint("SHA256:abc"), "abc");
         assert_eq!(normalize_fingerprint("abc"), "abc");
+    }
+
+    #[test]
+    fn formats_remaining_authentication_methods() {
+        let methods = MethodSet::from(&[MethodKind::Password, MethodKind::KeyboardInteractive][..]);
+        assert_eq!(format_methods(&methods), "password,keyboard-interactive");
+        assert_eq!(format_methods(&MethodSet::empty()), "none");
+    }
+
+    #[test]
+    fn validates_explicit_pluggable_transport_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join(if cfg!(windows) {
+            "lyrebird.exe"
+        } else {
+            "lyrebird"
+        });
+        fs::write(&file, b"test").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(resolve_pt_path(Some(&file)).unwrap(), file);
+    }
+
+    #[test]
+    fn rejects_missing_pluggable_transport_path() {
+        let missing = PathBuf::from("definitely-missing-anonssh-lyrebird");
+        let error = resolve_pt_path(Some(&missing)).unwrap_err().to_string();
+        assert!(error.contains("not a file"));
+    }
+
+    #[test]
+    fn rejects_exit_country_for_onion_service() {
+        let cli =
+            Cli::try_parse_from(["anonssh", "--exit-country", "DE", "user@example.onion"]).unwrap();
+        let country = cli.exit_country.unwrap();
+        assert_eq!(country.as_ref(), "DE");
+        let error = validate_exit_country_target(Some(&country), &cli.destination.unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("onion service"));
     }
 
     #[tokio::test]

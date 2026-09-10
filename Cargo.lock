@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "anonssh"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "arti-client",
@@ -237,6 +237,7 @@ dependencies = [
  "tor-dircommon",
  "tor-dirmgr",
  "tor-error",
+ "tor-geoip",
  "tor-guardmgr",
  "tor-keymgr",
  "tor-linkspec",
@@ -5055,6 +5056,7 @@ dependencies = [
  "tor-config",
  "tor-dircommon",
  "tor-error",
+ "tor-geoip",
  "tor-guardmgr",
  "tor-linkspec",
  "tor-memquota",
@@ -5231,6 +5233,7 @@ dependencies = [
  "tor-dirclient",
  "tor-dircommon",
  "tor-error",
+ "tor-geoip",
  "tor-guardmgr",
  "tor-llcrypto",
  "tor-netdir",
@@ -5272,6 +5275,24 @@ dependencies = [
  "thiserror 2.0.20",
  "void",
 ]
+
+[[package]]
+name = "tor-geoip"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44edc23691fc20335a864ab721993735258ccd38125100dbd9fc94cd4ae35384"
+dependencies = [
+ "derive_more",
+ "rangemap",
+ "thiserror 2.0.20",
+ "tor-geoip-db",
+]
+
+[[package]]
+name = "tor-geoip-db"
+version = "0.1.0-pre2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5baacfe724d837c0da5558fe5e544b0c99181001606b9eb066e4fd98a9b77952"
 
 [[package]]
 name = "tor-guardmgr"
@@ -5560,6 +5581,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tor-basic-utils",
  "tor-error",
+ "tor-geoip",
  "tor-linkspec",
  "tor-llcrypto",
  "tor-netdoc",
@@ -5771,6 +5793,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "tor-basic-utils",
+ "tor-geoip",
  "tor-linkspec",
  "tor-netdir",
  "tor-netdoc",

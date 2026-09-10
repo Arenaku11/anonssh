@@ -1,0 +1,98 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing prerelease tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: anonssh-windows-x86_64.exe
+            binary: target/x86_64-pc-windows-msvc/release/anonssh.exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: anonssh-linux-x86_64
+            binary: target/x86_64-unknown-linux-gnu/release/anonssh
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: anonssh-linux-aarch64
+            binary: target/aarch64-unknown-linux-gnu/release/anonssh
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: anonssh-macos-x86_64
+            binary: target/x86_64-apple-darwin/release/anonssh
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: anonssh-macos-aarch64
+            binary: target/aarch64-apple-darwin/release/anonssh
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Smoke test binary
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --version
+          "${{ matrix.binary }}" --help >/dev/null
+      - name: Stage bare executable
+        shell: bash
+        run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: publish prerelease
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum anonssh-* > SHA256SUMS
+      - name: Publish bare executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "$TAG" --notes-file RELEASE_NOTES.txt
+          gh release upload "$TAG" dist/anonssh-* dist/SHA256SUMS --clobber

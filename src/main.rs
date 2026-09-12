@@ -19,9 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tor_chanmgr::ProxyProtocol;
 
 fn install_crypto_provider() {
-    // Both `ring` and `aws-lc-rs` are in the dependency tree; rustls 0.23
-    // panics at runtime when the process-wide provider is ambiguous unless
-    // one is installed explicitly. Pin to `ring`.
+    // Arti, rustls, and russh all use the same process-wide ring provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 

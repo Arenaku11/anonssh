@@ -1,6 +1,7 @@
-anonssh v0.2.0-beta.1
+anonssh v0.2.0-beta.2
 
 Pre-release highlights:
+- Smaller release binaries through a single ring crypto backend, fat LTO, and symbol stripping.
 - In-process Arti Tor routing with isolated SSH circuits.
 - Real --exit-country routing through Arti StreamPrefs.
 - Keyboard-interactive PAM/OTP/2FA authentication.
